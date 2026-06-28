@@ -1,269 +1,366 @@
-# Pico W FreeRTOS Environment Logger
+# PicoW FreeRTOS Environment Logger
 
-Raspberry Pi Pico W、FreeRTOS、BME280、AQM0802 LCDを使った環境ロガーです。
-温度・湿度・気圧を取得し、LCD表示、UARTログ出力、Flashログ保存に加えて、Pico WのWi-Fi機能を使ってブラウザから環境データを確認できます。
+Raspberry Pi Pico W と FreeRTOS を使用した環境ロガーです。
+BME280 から取得した温度・湿度・気圧を、Pico W 内蔵の簡易 HTTP サーバでブラウザに表示します。
+
+本プロジェクトでは、以下の機能を実装しています。
+
+* FreeRTOS タスクによるセンサ値取得
+* BME280 による温度・湿度・気圧測定
+* Pico W の Wi-Fi 接続
+* lwIP raw API による簡易 HTTP サーバ
+* HTML ページによる環境データ表示
+* `/api/env` による JSON API 出力
+* JavaScript `fetch()` によるブラウザ画面の自動更新
+
+---
 
 ## 概要
 
-このプロジェクトは、Raspberry Pi Pico W、FreeRTOS、BME280、AQM0802 LCDを使った環境ロガーです。
+Pico W 上で HTTP サーバを動作させ、ブラウザから環境データを確認できるようにしたサンプルです。
 
-以前作成したRaspberry Pi Pico版の環境ロガーをベースに、Pico Wへ移行し、Wi-Fi接続と簡易HTTPサーバ機能を追加しました。
+ブラウザで Pico W の IP アドレスへアクセスすると、以下のような画面が表示されます。
 
-Pico版のリポジトリはこちらです。
+```text
+PicoW Environment Logger
 
-* [PicoSensorLogger](https://github.com/kazu025/PicoSensorLogger)
+Temperature: 28.93 °C
+Humidity: 63.87 %
+Pressure: 1003.84 hPa
+Status: OK
+```
 
-Pico W版では、従来のLCD表示、センサ取得、UARTログ、Flashログ保存といった機能を維持したまま、Wi-Fi経由でブラウザから環境データを確認できるようにしています。
+ページ全体を再読み込みするのではなく、JavaScript が `/api/env` に定期アクセスし、温度・湿度・気圧の数値だけを更新します。
 
-ブラウザからPico WのIPアドレスへアクセスすると、BME280から取得した温度・湿度・気圧を確認できます。
+---
 
+## システム構成
 
-## 主な機能
+```text
+BME280
+  ↓ I2C
+Raspberry Pi Pico W
+  ↓ FreeRTOS task
+EnvironmentData
+  ↓
+HTTP Server
+  ├─ /         : HTML + JavaScript
+  └─ /api/env  : JSON API
+```
 
-* FreeRTOSによるマルチタスク動作
-* BME280による温度・湿度・気圧取得
-* ADT7410による温度取得
-* AQM0802 LCDへの表示
-* タクトスイッチによる表示モード切り替え
-* UART DMAによるログ出力
-* Flash領域へのログ保存
-* Pico WによるWi-Fi接続
-* DHCPによるIPアドレス取得
-* LCDへのIPアドレス表示
-* lwIP RAW APIを使った簡易HTTPサーバ
-* ブラウザから環境データを表示
+---
 
 ## 使用ハードウェア
 
 * Raspberry Pi Pico W
-* BME280 温湿度・気圧センサ
-* ADT7410 温度センサ
-* AQM0802 LCD
-* タクトスイッチ
-* ブレッドボード、ジャンパ線など
+* BME280 センサモジュール
+* USB ケーブル
+* Wi-Fi 環境
+* 開発用 PC
 
-## Clone方法
+---
 
-このプロジェクトは FreeRTOS-Kernel を Git submodule として使用しています。
+## 主な機能
 
-```bash
-git clone --recursive https://github.com/kazu025/PicoWEnvironmentLogger.git
-```
-## I2C構成
+### 1. HTML 表示
 
-本プロジェクトでは、Pico WのI2C0を使用しています。
-
-| デバイス    | I2Cアドレス | 用途         |
-| ------- | ------: | ---------- |
-| AQM0802 |    0x3E | LCD表示      |
-| ADT7410 |    0x48 | 温度取得       |
-| BME280  |    0x76 | 温度・湿度・気圧取得 |
-
-I2Cピンは以下の設定です。
-
-| 信号  |  GPIO |
-| --- | ----: |
-| SDA | GPIO4 |
-| SCL | GPIO5 |
-
-I2Cクロックは安定性を優先して 50kHz に設定しています。
-
-## 表示機能
-
-LCDには、センサ値やログ情報、Wi-Fi接続情報を表示します。
-タクトスイッチにより表示モードを切り替えます。
-
-Wi-Fi接続後は、取得したIPアドレスをLCDに表示できます。
-
-例：
+ブラウザで Pico W の IP アドレスにアクセスすると、環境データ表示ページを返します。
 
 ```text
-192.168.
-10.108
+http://<PicoWのIPアドレス>/
 ```
 
-## HTTPサーバ機能
+表示内容は以下です。
 
-Pico WがWi-Fi接続後、簡易HTTPサーバを起動します。
+* Temperature
+* Humidity
+* Pressure
+* Status
 
-PCやスマートフォンのブラウザから、LCDに表示されたIPアドレスへアクセスします。
+---
 
-例：
+### 2. JSON API
+
+以下の URL にアクセスすると、環境データを JSON 形式で取得できます。
+
+```text
+http://<PicoWのIPアドレス>/api/env
+```
+
+出力例:
+
+```json
+{
+  "valid": true,
+  "temperature": 28.93,
+  "humidity": 63.87,
+  "pressure": 1003.84
+}
+```
+
+センサ値がまだ準備できていない場合は、以下のように返します。
+
+```json
+{
+  "valid": false
+}
+```
+
+---
+
+### 3. JavaScript による自動更新
+
+HTML ページ内の JavaScript が、定期的に `/api/env` を読み込みます。
+
+```javascript
+fetch('/api/env')
+```
+
+取得した JSON から値を取り出し、HTML の表示部分を書き換えます。
+
+```javascript
+document.getElementById('temperature').textContent = temperature.toFixed(2);
+document.getElementById('humidity').textContent = humidity.toFixed(2);
+document.getElementById('pressure').textContent = pressure.toFixed(2);
+```
+
+更新周期は 5 秒です。
+
+```javascript
+setInterval(updateEnv, 5000);
+```
+
+---
+
+## HTTP エンドポイント
+
+| URL        | 内容                 |
+| ---------- | ------------------ |
+| `/`        | 環境データ表示用 HTML ページ  |
+| `/api`     | JSON API           |
+| `/api/env` | 温度・湿度・気圧の JSON API |
+
+---
+
+## 実装メモ
+
+### HTTP サーバ
+
+HTTP サーバは lwIP の raw API を使用しています。
+
+主な処理は `HttpServer.cpp` にあります。
+
+* `http_server_init()`
+
+  * TCP PCB を作成
+  * port 80 に bind
+  * listen 開始
+  * accept callback 登録
+
+* `http_accept_callback()`
+
+  * 接続受付時に receive callback を登録
+
+* `http_recv_callback()`
+
+  * HTTP リクエスト受信
+  * `/api/env` か通常ページかを判定
+  * HTML または JSON を生成
+  * HTTP レスポンスを返す
+
+---
+
+### HTML と JSON の生成
+
+HTML 本文は `make_html_body()` で生成します。
+
+JSON 本文は `make_json_body()` で生成します。
+
+HTTP レスポンスヘッダは `make_http_response()` で生成します。
+
+```text
+HTTP/1.1 200 OK
+Content-Type: ...
+Connection: close
+Cache-Control: no-store
+Content-Length: ...
+```
+
+---
+
+### バッファ管理
+
+JavaScript入り HTML はサイズが大きくなるため、HTTP レスポンス用バッファを用意しています。
+
+```cpp
+#define HTTP_BODY_SIZE      2048
+#define HTTP_RESPONSE_SIZE  3072
+
+static char g_http_body[HTTP_BODY_SIZE];
+static char g_http_response[HTTP_RESPONSE_SIZE];
+```
+
+ローカル変数として大きな配列を持つと、FreeRTOS タスクや lwIP callback のスタックを圧迫するため、ファイルスコープの static バッファとして確保しています。
+
+---
+
+## ビルド方法
+
+通常の Pico SDK / FreeRTOS 環境でビルドします。
+
+例:
+
+```bash
+mkdir -p build
+cd build
+cmake ..
+make
+```
+
+プロジェクト側で Makefile を用意している場合は、以下のようにビルドします。
+
+```bash
+make
+```
+
+または、
+
+```bash
+make all
+```
+
+---
+
+## 実行方法
+
+ビルド後に生成された UF2 ファイルを Pico W に書き込みます。
+
+Pico W が Wi-Fi に接続すると、UART ログに IP アドレスが表示されます。
+
+例:
+
+```text
+HTTP server started on port 80
+IP address: 192.168.10.108
+```
+
+ブラウザで以下にアクセスします。
 
 ```text
 http://192.168.10.108/
 ```
 
-ブラウザには、BME280から取得した最新の環境データを表示します。
-
-表示例：
+JSON API を確認する場合は、以下にアクセスします。
 
 ```text
-PicoW Environment Logger
-
-Temperature: 26.69 C
-Humidity: 70.30 %
-Pressure: 1001.73 hPa
+http://192.168.10.108/api/env
 ```
 
-## ソフトウェア構成
+---
 
-主な構成ファイルは以下の通りです。
+## 確認した動作
 
-| ファイル                  | 内容                  |
-| --------------------- | ------------------- |
-| `main.cpp`            | FreeRTOSタスク生成、全体初期化 |
-| `WifiTask.cpp`        | Wi-Fi初期化、接続、IP取得    |
-| `HttpServer.cpp`      | 簡易HTTPサーバ           |
-| `EnvironmentTask.cpp` | BME280から環境データ取得     |
-| `EnvironmentData.cpp` | 最新の環境データ共有          |
-| `BME280.cpp`          | BME280制御            |
-| `AEADT7410.cpp`       | ADT7410制御           |
-| `AQM0802.cpp`         | LCD制御               |
-| `ButtonTask.cpp`      | タクトスイッチ処理           |
-| `FlashLogStorage.cpp` | Flashログ保存           |
-| `UartDma.cpp`         | UART DMA出力          |
+* Pico W が Wi-Fi に接続する
+* ブラウザから Pico W の HTTP サーバにアクセスできる
+* HTML ページに温度・湿度・気圧を表示できる
+* `/api/env` で JSON データを取得できる
+* JavaScript によりページ全体を再読み込みせずに値だけ更新できる
 
-## タスク構成
+---
 
-FreeRTOS上で複数のタスクを動作させています。
+## トラブルシュート
 
-| タスク              | 役割                |
-| ---------------- | ----------------- |
-| Logger task      | ログ出力処理            |
-| Environment task | BME280の温度・湿度・気圧取得 |
-| Temperature task | ADT7410の温度取得      |
-| ADC task         | ADCログ取得           |
-| Command task     | UARTコマンド処理        |
-| Button task      | タクトスイッチ入力処理       |
-| WiFi task        | Wi-Fi接続、HTTPサーバ起動 |
+### ブラウザにアクセスできない
 
-## 環境データ共有の考え方
+Pico W が Wi-Fi に接続できているか確認します。
 
-HTTPサーバのコールバック内では、直接I2Cセンサを読みません。
-
-BME280の読み取りは `EnvironmentTask` が周期的に行い、取得した最新値を共有データとして保存します。
-HTTPサーバは、ブラウザからアクセスが来たときに、その共有データを読み出してHTMLに埋め込みます。
-
-構成イメージ：
-
-```text
-EnvironmentTask
-    ↓
-BME280から温度・湿度・気圧を取得
-    ↓
-EnvironmentDataに最新値を保存
-    ↓
-HttpServerが最新値を読み出す
-    ↓
-ブラウザへHTMLとして返す
+```bash
+ping <PicoWのIPアドレス>
 ```
 
-この構成により、HTTP処理とI2Cアクセスを分離しています。
+IP アドレスが変わっている場合があります。UART ログで現在の IP アドレスを確認してください。
 
-## Wi-Fi設定
+---
 
-Wi-FiのSSIDとパスワードは `wifi_config.h` に記述します。
+### 画面に `HTT` だけ表示される
+
+HTTP レスポンス生成時のバッファサイズ指定が間違っている可能性があります。
+
+`body` や `response` が `char*` の場合、以下は誤りです。
 
 ```cpp
-#pragma once
-
-#define WIFI_SSID      "YOUR_WIFI_SSID"
-#define WIFI_PASSWORD  "YOUR_WIFI_PASSWORD"
+sizeof(body)
+sizeof(response)
 ```
 
-公開用には、以下のようなサンプルファイルを用意します。
+ポインタサイズになってしまうため、次のように定義済みサイズを指定します。
 
 ```cpp
-// wifi_config_sample.h
+HTTP_BODY_SIZE
+HTTP_RESPONSE_SIZE
 ```
 
-## ビルド方法
+---
 
-Pico W向けにビルドします。
+### `Status: starting...` のまま更新されない
 
-```bash
-./mk.sh clean picow
+JavaScript がブラウザに届いていない、または途中で切れている可能性があります。
+
+ブラウザでページのソースを表示し、以下が含まれているか確認します。
+
+```javascript
+updateEnv();
+setInterval(updateEnv, 5000);
 ```
 
-内部的には、以下のように `PICO_BOARD=pico_w` を指定しています。
+---
 
-```bash
-cmake -DPICO_BOARD=pico_w ..
+### `Temperature: NaN` と表示される
+
+JSON のキー名と JavaScript 側の参照名が一致しているか確認します。
+
+JSON 側:
+
+```json
+"temperature": 28.93
 ```
 
-通常のPico向けに戻す場合は、以下のようにします。
+JavaScript 側:
 
-```bash
-./mk.sh clean pico
+```javascript
+data.temperature
 ```
 
-## FreeRTOS Heapについて
+スペルが違うと `undefined` になり、`Number(undefined)` の結果が `NaN` になります。
 
-Wi-Fi機能とHTTPサーバを追加したことで、FreeRTOSのHeap使用量が増えました。
+---
 
-当初は以下の設定では不足しました。
+## 学習ポイント
 
-```c
-#define configTOTAL_HEAP_SIZE (32 * 1024)
-```
+このプロジェクトでは、以下を確認できます。
 
-WiFiTaskの追加により、タスクスタックだけでも大きなHeapを消費します。
-そのため、Heapサイズを増やして対応しました。
+* Pico W の Wi-Fi 使用方法
+* lwIP raw API による簡易 HTTP サーバ実装
+* HTTP レスポンスの基本構造
+* JSON API の作成
+* HTML と JavaScript の連携
+* `fetch()` による非同期データ取得
+* FreeRTOS タスクと Web 表示の連携
+* 組込み機器を簡易 IoT デバイス化する流れ
 
-例：
+---
 
-```c
-#define configTOTAL_HEAP_SIZE (128 * 1024)
-```
+## 今後の拡張案
 
-Heap不足調査では、`xPortGetFreeHeapSize()` と `xPortGetMinimumEverFreeHeapSize()` を使って、タスク生成後の残りHeapを確認しました。
+* グラフ表示の追加
+* 最終更新時刻の表示
+* ログデータの CSV ダウンロード
+* センサ異常時のエラー表示改善
+* 複数センサ対応
+* 表示デザインの改善
+* WebSocket や Server-Sent Events によるリアルタイム更新
 
-## HTTPサーバ実装について
-
-HTTPサーバは、lwIPのRAW APIを使って実装しています。
-
-* `tcp_new_ip_type()`
-* `tcp_bind()`
-* `tcp_listen()`
-* `tcp_accept()`
-* `tcp_recv()`
-* `tcp_write()`
-* `tcp_close()`
-
-を使い、ブラウザからのGETリクエストに対してHTMLを返します。
-
-また、Wi-Fi再接続時にHTTPサーバを二重起動しないように、起動済みフラグで保護しています。
-
-## 現在の到達点
-
-現在、以下の動作を確認済みです。
-
-* Pico Wで既存FreeRTOS Loggerが動作
-* LCD表示が動作
-* タクトスイッチによる表示切り替えが動作
-* I2CスキャンでLCD、ADT7410、BME280を検出
-* BME280から温度・湿度・気圧を取得
-* Wi-Fi接続成功
-* DHCPでIPアドレス取得
-* LCDにIPアドレス表示
-* Pico W内蔵LED点滅
-* HTTPサーバ起動
-* ブラウザからPico Wへアクセス
-* 温度・湿度・気圧をWeb表示
-
-## 今後の予定
-
-今後は以下の機能追加を検討しています。
-
-* ブラウザ表示の自動更新
-* JSON APIの追加
-* JavaScriptによる部分更新
-* ログ件数のWeb表示
-* 最新ログのWeb表示
-* 簡易グラフ表示
-* READMEとNote記事の整理
-
+---
 
 ## ライセンス
 

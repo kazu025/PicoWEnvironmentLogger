@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdbool.h>
 
 #include "pico/cyw43_arch.h"
 #include "lwip/tcp.h"
@@ -12,67 +13,91 @@
 static bool g_http_server_started = false;
 static struct tcp_pcb * g_http_pcb = nullptr;
 
-static void mk_response(char *res, size_t sz){
-    EnvironmentData env = environment_data_get();
-    char body[1024];
-    if(env.valid){
-    snprintf(body, sizeof(body),
+#define HTTP_BODY_SIZE      2048
+#define HTTP_RESPONSE_SIZE  3072
+
+static char g_http_body[HTTP_BODY_SIZE];
+static char g_http_response[HTTP_RESPONSE_SIZE];
+
+static void make_json_body(char *body, size_t body_size);
+static void make_html_body(char *body, size_t body_size);
+static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err);
+static err_t http_accept_callback(void *arg, struct tcp_pcb *newpcb, err_t err);
+static int make_http_response(char *response, size_t response_size, const char* content_type, const char* body);
+static bool http_request_is_api(struct pbuf *p);
+
+
+static void make_html_body(char *body, size_t body_size){
+    snprintf(body, body_size,
         "<!DOCTYPE html>"
         "<html>"
         "<head>"
         "<meta charset=\"UTF-8\">"
-        "<meta http-equiv=\"refresh\" content=\"5\">"
-        "<title>PicoW Logger</title></head>"
+        "<title>PicoW Logger</title>"
+        "</head>"
         "<body>"
         "<h1>PicoW Environment Logger</h1>"
-        "<p>Temperature: %.2f &deg;C</p>"
-        "<p>Humidity: %.2f %%</p>"
-        "<p>Pressure: %.2f hPa</p>"
-        "</body>"
-        "</html>",
-        env.temperature,
-        env.humidity,
-        env.pressure);
-    } else {
-    snprintf(body, sizeof(body),
-        "<!DOCTYPE html>"
-        "<html>"
-        "<head><meta charset=\"UTF-8\"><title>PicoW Logger</title></head>"
-        "<body>"
-        "<h1>PicoW Environment Logger</h1>"
-        "<p>Sensor data is not ready.</p>"
+        "<p>Temperature: <span id=\"temperature\">--</span> &deg;C</p>"
+        "<p>Humidity: <span id=\"humidity\">--</span> %%</p>"
+        "<p>Pressure: <span id=\"pressure\">--</span> hPa</p>"
+        "<p>Status: <span id=\"status\">starting...</span></p>"
+        "<script>"
+        "function updateEnv() {"
+        "fetch('/api/env')"
+        ".then(function(response){"
+        "return response.json();"
+        "})"
+        ".then(function(data) {"
+        "if (data.valid !== true){"
+        "document.getElementById('status').textContent = 'Sensor data is not ready';"
+        "return;"
+        "}"
+        "const temperature = Number(data.temperature);"
+        "const humidity = Number(data.humidity);"
+        "const pressure = Number(data.pressure);"
+        "document.getElementById('temperature').textContent = temperature.toFixed(2);"
+        "document.getElementById('humidity').textContent = humidity.toFixed(2);"
+        "document.getElementById('pressure').textContent = pressure.toFixed(2);"
+        "document.getElementById('status').textContent = 'OK';"
+        "})"
+        ".catch(function(error) {"
+        "document.getElementById('status').textContent = 'HTTP error';"
+        "});"
+        "}"
+        "updateEnv();"
+        "setInterval(updateEnv, 5000);"
+        "</script>"
         "</body>"
         "</html>");
-    }
-    snprintf(res, sz,
-        "HTTP/1.1 200 OK\r\n"
-        "Content-Type: text/html; charset=UTF-8\r\n"
-        "Connection: close\r\n"
-        "Cache-Control: no-store\r\n"
-        "Content-Length: %u\r\n"
-        "\r\n"
-        "%s",
-        (unsigned)strlen(body),
-        body
-    );
 }
 static err_t http_recv_callback(void *arg, struct tcp_pcb *tpcb, struct pbuf *p, err_t err){
-    char response[1024];
     (void)arg;
-
+    
     if(p == nullptr){
         tcp_close(tpcb);
         return ERR_OK;
     }    
+
     if(err != ERR_OK){
         pbuf_free(p);
         tcp_close(tpcb);
         return err;
     }
-
-    mk_response(response, sizeof(response));
-
+    
     tcp_recved(tpcb, p->tot_len);
+    
+    char *body = g_http_body;
+    char *response = g_http_response;
+    body[0] = '\0';
+    response[0] = '\0';
+
+    if(http_request_is_api(p)){
+        make_json_body(body, HTTP_BODY_SIZE);
+        make_http_response(response, HTTP_RESPONSE_SIZE, "application/json; charset=UTF-8", body);
+    } else {
+        make_html_body(body, HTTP_BODY_SIZE);
+        make_http_response(response, HTTP_RESPONSE_SIZE, "text/html; charset=UTF-8", body);
+    }
 
     err_t wr_err = tcp_write(tpcb, response, strlen(response), TCP_WRITE_FLAG_COPY);
 
@@ -147,9 +172,78 @@ void http_server_init(void){
     printf("HTTP server started on port 80\n");
 }
 
+static int make_http_response(char *response, size_t response_size, const char* content_type, const char* body){
+    int n = snprintf(response, response_size,
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: %s\r\n"
+        "Connection: close\r\n"
+        "Cache-Control: no-store\r\n"
+        "Content-Length: %u\r\n"
+        "\r\n"
+        "%s",
+        content_type,
+        (unsigned)strlen(body),
+        body
+    );
+    if(n < 0 || (size_t)n >= response_size){
+        response[0] = '\0';
+        return false;
+    }
+    return true;
+}
 
+static bool http_request_is_api(struct pbuf *p){
+    char req[96] = {0};
 
+    if(p == nullptr){
+        return false;
+    }
 
+    uint16_t len = pbuf_copy_partial(p, req, sizeof(req) - 1, 0);
+    req[len] = '\0';
+
+    if(strncmp(req, "GET /api ", 9) == 0){
+        return true;
+    }
+
+    if(strncmp(req, "GET /api?", 9) == 0){
+        return true;
+    }
+
+    if(strncmp(req, "GET /api/env ", 13) == 0){
+        return true;
+    }
+
+    if(strncmp(req, "GET /api/env?", 13) == 0){
+        return true;
+    }
+
+    return false;
+}
+
+static void make_json_body(char *body, size_t body_size){
+    EnvironmentData env = environment_data_get();
+
+    if(env.valid){
+        snprintf(body, body_size,
+            "{"
+            "\"valid\":true,"
+            "\"temperature\":%.2f,"
+            "\"humidity\":%.2f,"
+            "\"pressure\":%.2f"
+            "}",
+            env.temperature,
+            env.humidity,
+            env.pressure
+        );
+    } else {
+        snprintf(body, body_size,
+            "{"
+            "\"valid\":false"
+            "}"
+        );
+    }
+}
 
 
 
